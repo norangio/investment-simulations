@@ -11,7 +11,7 @@ A Streamlit app to simulate portfolio growth using Monte Carlo methods. Enter yo
 - Optional overlay of individual simulation paths
 - CSV downloads for summary data
 
-[![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://blank-app-template.streamlit.app/)
+[![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://investment-simulations.streamlit.app/)
 
 ### How to run it locally
 
