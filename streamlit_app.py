@@ -356,4 +356,3 @@ with colA:
 with colB:
     st.download_button("Download summary (Real $)", data=csv_real, file_name="summary_real.csv", mime="text/csv")
 
-st.caption("Model: annual returns ~ Normal(mu, sigma). Expense ratio applied as multiplicative drag. Contributions can grow over time. Real dollars deflated by constant inflation rate. For education only.")
