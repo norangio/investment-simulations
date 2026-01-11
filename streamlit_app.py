@@ -18,10 +18,20 @@ def simulate_paths(
     inflation_pct: float = 0.0,
     contribution_timing: str = "start",  # 'start' or 'end'
     seed: int | None = 42,
+    distribution: str = "normal",  # 'normal', 't-distribution', 'mixture'
+    t_df: float = 5.0,  # degrees of freedom for t-distribution
+    crash_prob_pct: float = 10.0,  # probability of crash year (mixture model)
+    crash_mean_pct: float = -20.0,  # mean return in crash year
+    crash_std_pct: float = 25.0,  # volatility in crash year
 ):
     """Return a (n_sims x (years+1)) array of portfolio values by year.
 
     Returns both nominal and real (inflation-adjusted) matrices.
+
+    Distribution options:
+    - 'normal': Standard normal distribution (may underestimate tail risk)
+    - 't-distribution': Student's t with fatter tails (df controls tail thickness)
+    - 'mixture': Normal most years, but crash_prob% chance of crash regime
     """
     if seed is not None:
         rng = np.random.default_rng(seed)
@@ -37,8 +47,34 @@ def simulate_paths(
     # Precompute contributions each year (nominal)
     contribs = np.array([(annual_contribution * ((1 + cg) ** t)) for t in range(years)], dtype=float)
 
-    # Draw annual returns for each sim and year
-    rets = rng.normal(loc=mu, scale=sigma, size=(n_sims, years))
+    # Draw annual returns based on distribution type
+    if distribution == "t-distribution":
+        # Student's t-distribution: fatter tails than normal
+        # Scale t samples to have desired mean and std
+        t_samples = rng.standard_t(df=t_df, size=(n_sims, years))
+        # Adjust variance: Var(t) = df/(df-2) for df > 2
+        if t_df > 2:
+            scale_factor = np.sqrt((t_df - 2) / t_df)
+        else:
+            scale_factor = 1.0
+        rets = mu + sigma * t_samples * scale_factor
+    elif distribution == "mixture":
+        # Mixture model: normal most years, crash distribution some years
+        crash_prob = crash_prob_pct / 100.0
+        crash_mu = crash_mean_pct / 100.0
+        crash_sigma = crash_std_pct / 100.0
+
+        # Draw from normal distribution
+        rets = rng.normal(loc=mu, scale=sigma, size=(n_sims, years))
+
+        # Determine which years are crash years
+        is_crash = rng.random(size=(n_sims, years)) < crash_prob
+
+        # Replace crash years with draws from crash distribution
+        crash_rets = rng.normal(loc=crash_mu, scale=crash_sigma, size=(n_sims, years))
+        rets = np.where(is_crash, crash_rets, rets)
+    else:  # normal
+        rets = rng.normal(loc=mu, scale=sigma, size=(n_sims, years))
     # Apply expense drag multiplicatively
     rets_net = (1 + rets) * (1 - er) - 1
 
@@ -126,19 +162,77 @@ st.caption("Simulate possible futures. Not advice. Just math.")
 
 with st.sidebar:
     st.header("Inputs")
+
+    # Presets
+    st.subheader("Quick Presets")
+    preset_col1, preset_col2, preset_col3 = st.columns(3)
+    with preset_col1:
+        conservative = st.button("Conservative", help="5% return, 10% vol", use_container_width=True)
+    with preset_col2:
+        moderate = st.button("Moderate", help="7% return, 15% vol", use_container_width=True)
+    with preset_col3:
+        aggressive = st.button("Aggressive", help="9% return, 20% vol", use_container_width=True)
+
+    # Set defaults based on preset (using session state)
+    if "preset_applied" not in st.session_state:
+        st.session_state.preset_applied = None
+    if conservative:
+        st.session_state.preset_applied = "conservative"
+    elif moderate:
+        st.session_state.preset_applied = "moderate"
+    elif aggressive:
+        st.session_state.preset_applied = "aggressive"
+
+    # Determine default values based on preset
+    if st.session_state.preset_applied == "conservative":
+        default_mean, default_std = 5.0, 10.0
+    elif st.session_state.preset_applied == "aggressive":
+        default_mean, default_std = 9.0, 20.0
+    else:  # moderate or None
+        default_mean, default_std = 7.0, 15.0
+
+    st.divider()
     initial = st.number_input("Initial investment ($)", min_value=0.0, value=10000.0, step=1000.0, format="%0.2f")
     contrib = st.number_input("Annual contribution ($)", min_value=0.0, value=12000.0, step=1000.0, format="%0.2f")
     years = st.number_input("Horizon (years)", min_value=1, max_value=80, value=30, step=1)
 
     st.subheader("Returns")
-    mean_ret = st.number_input("Expected annual return (%)", value=7.0, step=0.1, format="%0.2f")
-    std_ret = st.number_input("Annual volatility (stdev, %)", value=15.0, step=0.5, format="%0.2f")
+    mean_ret = st.number_input("Expected annual return (%)", value=default_mean, step=0.1, format="%0.2f")
+    std_ret = st.number_input("Annual volatility (stdev, %)", value=default_std, step=0.5, format="%0.2f")
     expense_ratio = st.number_input("Annual expense ratio (%)", min_value=0.0, value=0.05, step=0.01, format="%0.2f")
+
+    st.subheader("Return Distribution")
+    distribution = st.selectbox(
+        "Distribution type",
+        options=["normal", "t-distribution", "mixture"],
+        index=0,
+        help="Normal may underestimate tail risk. T-distribution has fatter tails. Mixture models occasional crash years."
+    )
+
+    # Show distribution-specific parameters
+    t_df = 5.0
+    crash_prob = 10.0
+    crash_mean = -20.0
+    crash_std = 25.0
+
+    if distribution == "t-distribution":
+        t_df = st.number_input(
+            "Degrees of freedom",
+            min_value=2.1, max_value=30.0, value=5.0, step=0.5,
+            help="Lower = fatter tails (more extreme events). 5-10 is typical for financial modeling. >30 approaches normal."
+        )
+    elif distribution == "mixture":
+        crash_prob = st.number_input("Crash probability per year (%)", min_value=0.0, max_value=50.0, value=10.0, step=1.0)
+        crash_mean = st.number_input("Crash year mean return (%)", value=-20.0, step=1.0)
+        crash_std = st.number_input("Crash year volatility (%)", min_value=0.1, value=25.0, step=1.0)
 
     st.subheader("Contributions & Inflation")
     contrib_growth = st.number_input("Contribution growth per year (%)", min_value=0.0, value=0.0, step=0.5, format="%0.2f")
     inflation = st.number_input("Inflation (for real dollars, %)", min_value=0.0, value=2.5, step=0.1, format="%0.2f")
     timing = st.selectbox("Contribution timing", options=["start", "end"], index=0, help="Start = before growth; End = after growth")
+
+    st.subheader("Goal")
+    goal = st.number_input("Target portfolio value ($)", min_value=0.0, value=1000000.0, step=50000.0, format="%0.0f", help="Used to calculate probability of reaching your goal")
 
     st.subheader("Simulation")
     n_sims = st.slider("Number of simulations", min_value=100, max_value=20000, value=5000, step=100)
@@ -157,17 +251,69 @@ bal_nom, bal_real = simulate_paths(
     inflation_pct=inflation,
     contribution_timing=timing,
     seed=int(seed),
+    distribution=distribution,
+    t_df=t_df,
+    crash_prob_pct=crash_prob,
+    crash_mean_pct=crash_mean,
+    crash_std_pct=crash_std,
 )
 
 # Summaries
 summary_nom = summarize_paths(bal_nom)
 summary_real = summarize_paths(bal_real)
 
+# Helper for formatting currency
+def format_currency(value: float) -> str:
+    if value >= 1_000_000:
+        return f"${value / 1_000_000:.2f}M"
+    elif value >= 1_000:
+        return f"${value / 1_000:.0f}K"
+    else:
+        return f"${value:.0f}"
+
+# Calculate key metrics
+final_values = bal_nom[:, -1]
+total_contributions = initial + sum(contrib * ((1 + contrib_growth / 100) ** t) for t in range(years))
+prob_reach_goal = (final_values >= goal).mean() * 100
+median_final = np.median(final_values)
+p10_final = np.percentile(final_values, 10)
+p90_final = np.percentile(final_values, 90)
+
+# Key metrics row
+st.subheader("Key Metrics")
+col1, col2, col3, col4 = st.columns(4)
+with col1:
+    st.metric(
+        label="Median Final Value",
+        value=format_currency(median_final),
+        delta=f"{((median_final / total_contributions) - 1) * 100:.0f}% gain" if median_final > total_contributions else f"{((median_final / total_contributions) - 1) * 100:.0f}%"
+    )
+with col2:
+    st.metric(
+        label="10th Percentile",
+        value=format_currency(p10_final),
+        help="Worst 10% of outcomes"
+    )
+with col3:
+    st.metric(
+        label="90th Percentile",
+        value=format_currency(p90_final),
+        help="Best 10% of outcomes"
+    )
+with col4:
+    st.metric(
+        label=f"Prob. of {format_currency(goal)}",
+        value=f"{prob_reach_goal:.1f}%",
+        help=f"Chance of reaching your ${goal:,.0f} goal"
+    )
+
+st.divider()
+
 # Tabs for nominal vs real
 tab1, tab2 = st.tabs(["Nominal $", "Real $ (inflation-adjusted)"])
 
 with tab1:
-    st.subheader("Summary table (Nominal $")
+    st.subheader("Summary table (Nominal $)")
     st.dataframe(
         summary_nom[["Year", "P10", "P50", "P90", "Mean"]]
         .round(0)
@@ -178,7 +324,7 @@ with tab1:
     st.plotly_chart(fig1, use_container_width=True)
 
 with tab2:
-    st.subheader("Summary table (Real $")
+    st.subheader("Summary table (Real $)")
     st.dataframe(
         summary_real[["Year", "P10", "P50", "P90", "Mean"]]
         .round(0)
